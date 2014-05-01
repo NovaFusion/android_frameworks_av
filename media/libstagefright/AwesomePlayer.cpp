@@ -1891,6 +1891,10 @@ status_t AwesomePlayer::initAudioDecoder() {
     if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_RAW)) {
         ALOGV("createAudioPlayer: bypass OMX (raw)");
         mAudioSource = mAudioTrack;
+        // For PCM offload fallback
+        if (mOffloadAudio) {
+            mOmxSource = mAudioSource;
+        }
     } else {
         // If offloading we still create a OMX decoder as a fall-back
         // but we don't start it
@@ -1914,7 +1918,7 @@ status_t AwesomePlayer::initAudioDecoder() {
     mAudioTrack->getFormat()->findInt64(kKeyDuration, &durationUs);
 
     if (!mOffloadAudio && mAudioSource != NULL) {
-        ALOGW("Could not offload audio decode, try pcm offload");
+        ALOGI("Could not offload audio decode, try pcm offload");
         sp<MetaData> format = mAudioSource->getFormat();
         if (durationUs >= 0) {
             format->setInt64(kKeyDuration, durationUs);
@@ -2153,8 +2157,8 @@ void AwesomePlayer::onVideoEvent() {
             mVideoBuffer = NULL;
         }
 
-        if (mSeeking == SEEK && isStreamingHTTP() && mAudioSource != NULL
-                && !(mFlags & SEEK_PREVIEW)) {
+        if (mSeeking == SEEK && (isStreamingHTTP() || mOffloadAudio)
+                && mAudioSource != NULL && !(mFlags & SEEK_PREVIEW)) {
             // We're going to seek the video source first, followed by
             // the audio source.
             // In order to avoid jumps in the DataSource offset caused by
@@ -2344,7 +2348,11 @@ void AwesomePlayer::onVideoEvent() {
 
         latenessUs = nowUs - timeUs;
 
-        ATRACE_INT("Video Lateness (ms)", latenessUs / 1E3);
+        if (latenessUs >= 0) {
+            ATRACE_INT("Video Lateness (ms)", latenessUs / 1E3);
+        } else {
+            ATRACE_INT("Video Earlyness (ms)", -latenessUs / 1E3);
+        }
 
         if (latenessUs > 500000ll
                 && mAudioPlayer != NULL
@@ -2494,6 +2502,7 @@ void AwesomePlayer::onVideoEvent() {
         int64_t nextTimeUs;
         CHECK(mVideoBuffer->meta_data()->findInt64(kKeyTime, &nextTimeUs));
         int64_t delayUs = nextTimeUs - ts->getRealTimeUs() + mTimeSourceDeltaUs;
+        ATRACE_INT("Video postDelay", delayUs < 0 ? 1 : delayUs);
         postVideoEvent_l(delayUs > 10000 ? 10000 : delayUs < 0 ? 0 : delayUs);
         return;
     }
